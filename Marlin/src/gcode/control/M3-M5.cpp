@@ -1,9 +1,9 @@
 /**
  * Marlin 3D Printer Firmware
- * Copyright (C) 2019 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
+ * Copyright (c) 2020 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
  *
  * Based on Sprinter and grbl.
- * Copyright (C) 2011 Camiel Gubbels / Erik van der Zalm
+ * Copyright (c) 2011 Camiel Gubbels / Erik van der Zalm
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,29 +16,42 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  *
  */
 
 #include "../../inc/MarlinConfig.h"
 
-#if ENABLED(SPINDLE_LASER_ENABLE)
+#if HAS_CUTTER
 
 #include "../gcode.h"
-#include "../../module/stepper.h"
-
-uint8_t spindle_laser_power; // = 0
+#include "../../feature/spindle_laser.h"
+#include "../../module/planner.h"
 
 /**
- * M3: Spindle Clockwise
- * M4: Spindle Counter-clockwise
+ * Laser:
+ *  M3 - Laser ON/Power (Ramped power)
+ *  M4 - Laser ON/Power (Ramped power)
  *
- *  S0 turns off spindle.
+ *  M3I - Enable continuous inline power to be processed by the planner, with power
+ *        calculated and set in the planner blocks, processed inline during stepping.
+ *        In inline mode M3 S-Values will set the power for the next moves.
+ *        (e.g., G1 X10 Y10 powers on with the last S-Value.)
+ *        M3I must be set before using planner-synced M3 inline S-Values (LASER_POWER_SYNC).
  *
- *  If no speed PWM output is defined then M3/M4 just turns it on.
+ *  M4I - Set dynamic mode which calculates laser power OCR based on the current feedrate.
  *
- *  At least 12.8KHz (50Hz * 256) is needed for spindle PWM.
- *  Hardware PWM is required. ISRs are too slow.
+ * Spindle:
+ *  M3 - Spindle ON (Clockwise)
+ *  M4 - Spindle ON (Counter-clockwise)
+ *
+ * Parameters:
+ *  S<power> - Set power. S0 will turn the spindle/laser off.
+ *
+ *  If no PWM pin is defined then M3/M4 just turns it on or off.
+ *
+ *  At least 12.8kHz (50Hz * 256) is needed for Spindle PWM.
+ *  Hardware PWM is required on AVR. ISRs are too slow.
  *
  * NOTE: WGM for timers 3, 4, and 5 must be either Mode 1 or Mode 5.
  *       No other settings give a PWM signal that goes from 0 to 5 volts.
@@ -59,114 +72,85 @@ uint8_t spindle_laser_power; // = 0
  *
  *  PWM duty cycle goes from 0 (off) to 255 (always on).
  */
-
-// Wait for spindle to come up to speed
-inline void delay_for_power_up() { safe_delay(SPINDLE_LASER_POWERUP_DELAY); }
-
-// Wait for spindle to stop turning
-inline void delay_for_power_down() { safe_delay(SPINDLE_LASER_POWERDOWN_DELAY); }
-
-/**
- * ocr_val_mode() is used for debugging and to get the points needed to compute the RPM vs ocr_val line
- *
- * it accepts inputs of 0-255
- */
-
-inline void set_spindle_laser_ocr(const uint8_t ocr) {
-  WRITE(SPINDLE_LASER_ENA_PIN, SPINDLE_LASER_ENABLE_INVERT); // turn spindle on (active low)
-  #if ENABLED(SPINDLE_LASER_PWM)
-    analogWrite(SPINDLE_LASER_PWM_PIN, (SPINDLE_LASER_PWM_INVERT) ? 255 - ocr : ocr);
-  #endif
-}
-
-#if ENABLED(SPINDLE_LASER_PWM)
-
-  void update_spindle_laser_power() {
-    if (spindle_laser_power == 0) {
-      WRITE(SPINDLE_LASER_ENA_PIN, !SPINDLE_LASER_ENABLE_INVERT);                      // turn spindle off (active low)
-      analogWrite(SPINDLE_LASER_PWM_PIN, SPINDLE_LASER_PWM_INVERT ? 255 : 0);             // only write low byte
-      delay_for_power_down();
-    }
-    else {                                                                                // Convert RPM to PWM duty cycle
-      constexpr float inv_slope = 1.0f / (SPEED_POWER_SLOPE),
-                      min_ocr = (SPEED_POWER_MIN - (SPEED_POWER_INTERCEPT)) * inv_slope,  // Minimum allowed
-                      max_ocr = (SPEED_POWER_MAX - (SPEED_POWER_INTERCEPT)) * inv_slope;  // Maximum allowed
-      int16_t ocr_val;
-           if (spindle_laser_power <= SPEED_POWER_MIN) ocr_val = min_ocr;                 // Use minimum if set below
-      else if (spindle_laser_power >= SPEED_POWER_MAX) ocr_val = max_ocr;                 // Use maximum if set above
-      else ocr_val = (spindle_laser_power - (SPEED_POWER_INTERCEPT)) * inv_slope;         // Use calculated OCR value
-      set_spindle_laser_ocr(ocr_val & 0xFF);                                              // ...limited to Atmel PWM max
-      delay_for_power_up();
-    }
-  }
-
-#endif // SPINDLE_LASER_PWM
-
-bool spindle_laser_enabled() {
-  return !!spindle_laser_power; // READ(SPINDLE_LASER_ENA_PIN) == SPINDLE_LASER_ENABLE_INVERT;
-}
-
-void set_spindle_laser_enabled(const bool enable) {
-  // Enabled by PWM setting elsewhere
-  spindle_laser_power = enable ? 255 : 0;
-  #if ENABLED(SPINDLE_LASER_PWM)
-    update_spindle_laser_power();
-  #else
-    if (enable) {
-      WRITE(SPINDLE_LASER_ENA_PIN, SPINDLE_LASER_ENABLE_INVERT);
-      delay_for_power_up();
-    }
-    else {
-      WRITE(SPINDLE_LASER_ENA_PIN, !SPINDLE_LASER_ENABLE_INVERT);
-      delay_for_power_down();
-    }
-  #endif
-}
-
-#if SPINDLE_DIR_CHANGE
-
-  void set_spindle_direction(const bool reverse_dir) {
-    const bool dir_state = (reverse_dir == SPINDLE_INVERT_DIR); // Forward (M3) HIGH when not inverted
-    if (SPINDLE_STOP_ON_DIR_CHANGE && spindle_laser_enabled() && READ(SPINDLE_DIR_PIN) != dir_state)
-      set_spindle_laser_enabled(false);
-    WRITE(SPINDLE_DIR_PIN, dir_state);
-  }
-
-#endif
-
 void GcodeSuite::M3_M4(const bool is_M4) {
-
-  planner.synchronize();   // wait until previous movement commands (G0/G0/G2/G3) have completed before playing with the spindle
-
-  #if SPINDLE_DIR_CHANGE
-    set_spindle_direction(is_M4);
+  #if LASER_SAFETY_TIMEOUT_MS > 0
+    reset_stepper_timeout(); // Reset timeout to allow subsequent G-code to power the laser (imm.)
   #endif
 
-  /**
-   * Our final value for ocr_val is an unsigned 8 bit value between 0 and 255 which usually means uint8_t.
-   * Went to uint16_t because some of the uint8_t calculations would sometimes give 1000 0000 rather than 1111 1111.
-   * Then needed to AND the uint16_t result with 0x00FF to make sure we only wrote the byte of interest.
-   */
-  #if ENABLED(SPINDLE_LASER_PWM)
-    if (parser.seen('O')) {
-      spindle_laser_power = parser.value_byte();
-      set_spindle_laser_ocr(spindle_laser_power);
+  if (cutter.cutter_mode == CUTTER_MODE_STANDARD)
+    planner.synchronize();   // Wait for previous movement commands (G0/G1/G2/G3) to complete before changing power
+
+  #if ENABLED(LASER_FEATURE)
+    if (parser.seen_test('I')) {
+      cutter.cutter_mode = is_M4 ? CUTTER_MODE_DYNAMIC : CUTTER_MODE_CONTINUOUS;
+      cutter.inline_power(0);
+      cutter.set_enabled(true);
     }
-    else {
-      spindle_laser_power = parser.intval('S', 255);
-      update_spindle_laser_power();
-    }
-  #else
-    set_spindle_laser_enabled(true);
   #endif
+
+  auto get_s_power = [] {
+    if (parser.seenval('S')) {
+      const float v = parser.value_float();
+      cutter.menuPower = cutter.unitPower = TERN(LASER_POWER_TRAP, v, cutter.power_to_range(v));
+    }
+    else if (cutter.cutter_mode == CUTTER_MODE_STANDARD)
+      cutter.menuPower = cutter.unitPower = cutter.cpwr_to_upwr(SPEED_POWER_STARTUP);
+
+    // PWM not implied, power converted to OCR from unit definition and on/off if not PWM.
+    cutter.power = TERN(SPINDLE_LASER_USE_PWM, cutter.upower_to_ocr(cutter.unitPower), cutter.unitPower > 0 ? 255 : 0);
+  };
+
+  if (cutter.cutter_mode == CUTTER_MODE_CONTINUOUS || cutter.cutter_mode == CUTTER_MODE_DYNAMIC) {  // Laser power in inline mode
+    #if ENABLED(LASER_FEATURE)
+      planner.laser_inline.status.isPowered = true;                                                 // M3 or M4 is powered either way
+      get_s_power();                                                                                // Update cutter.power if seen
+      #if ENABLED(LASER_POWER_SYNC)
+        // With power sync we only set power so it does not effect queued inline power sets
+        planner.buffer_sync_block(BLOCK_BIT_LASER_PWR);                                            // Send the flag, queueing inline power
+      #else
+        planner.synchronize();
+        cutter.inline_power(cutter.power);
+      #endif
+    #endif
+  }
+  else {
+    cutter.set_enabled(true);
+    get_s_power();
+    cutter.apply_power(
+      #if ENABLED(SPINDLE_SERVO)
+        cutter.unitPower
+      #elif ENABLED(SPINDLE_LASER_USE_PWM)
+        cutter.upower_to_ocr(cutter.unitPower)
+      #else
+        cutter.unitPower > 0 ? 255 : 0
+      #endif
+    );
+    TERN_(SPINDLE_CHANGE_DIR, cutter.set_reverse(is_M4));
+  }
 }
 
 /**
- * M5 turn off spindle
+ * M5 - Cutter OFF (when moves are complete)
+ *
+ * Laser:
+ *  M5  - Set power output to 0 (leaving inline mode unchanged).
+ *  M5I - Clear inline mode and set power to 0.
+ *
+ * Spindle:
+ *  M5 - Spindle OFF
  */
 void GcodeSuite::M5() {
   planner.synchronize();
-  set_spindle_laser_enabled(false);
+  cutter.power = 0;
+  cutter.apply_power(0);                          // M5 just kills power, leaving inline mode unchanged
+  if (cutter.cutter_mode != CUTTER_MODE_STANDARD) {
+    if (parser.seen_test('I')) {
+      TERN_(LASER_FEATURE, cutter.inline_power(cutter.power));
+      cutter.set_enabled(false);                  // Needs to happen while we are in inline mode to clear inline power.
+      cutter.cutter_mode = CUTTER_MODE_STANDARD;  // Switch from inline to standard mode.
+    }
+  }
+  cutter.set_enabled(false);                      // Disable enable output setting
 }
 
-#endif // SPINDLE_LASER_ENABLE
+#endif // HAS_CUTTER

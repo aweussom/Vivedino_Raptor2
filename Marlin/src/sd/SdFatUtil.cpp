@@ -1,9 +1,9 @@
 /**
  * Marlin 3D Printer Firmware
- * Copyright (C) 2019 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
+ * Copyright (c) 2020 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
  *
  * Based on Sprinter and grbl.
- * Copyright (C) 2011 Camiel Gubbels / Erik van der Zalm
+ * Copyright (c) 2011 Camiel Gubbels / Erik van der Zalm
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,20 +16,22 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  *
  */
 
 /**
+ * sd/SdFatUtil.cpp
+ *
  * Arduino SdFat Library
- * Copyright (C) 2008 by William Greiman
+ * Copyright (c) 2008 by William Greiman
  *
  * This file is part of the Arduino Sd2Card Library
  */
 
 #include "../inc/MarlinConfig.h"
 
-#if ENABLED(SDSUPPORT)
+#if HAS_MEDIA
 
 #include "SdFatUtil.h"
 #include <string.h>
@@ -46,7 +48,7 @@
     return &top - reinterpret_cast<char*>(sbrk(0));
   }
 
-#else
+#elif defined(__AVR__)
 
   extern char* __brkval;
   extern char __bss_end;
@@ -57,4 +59,4 @@
 
 #endif
 
-#endif // SDSUPPORT
+#endif // HAS_MEDIA

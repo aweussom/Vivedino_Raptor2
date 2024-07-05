@@ -1,9 +1,9 @@
 /**
  * Marlin 3D Printer Firmware
- * Copyright (C) 2019 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
+ * Copyright (c) 2020 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
  *
  * Based on Sprinter and grbl.
- * Copyright (C) 2011 Camiel Gubbels / Erik van der Zalm
+ * Copyright (c) 2011 Camiel Gubbels / Erik van der Zalm
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,16 +16,15 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  *
  */
 #pragma once
 
+#include "../inc/MarlinConfig.h"
+
 // Print debug messages with M111 S2 (Uses 156 bytes of PROGMEM)
 //#define DEBUG_STOPWATCH
-
-#include "../core/macros.h" // for FORCE_INLINE
-#include "../core/millis_t.h"
 
 /**
  * @brief Stopwatch class
@@ -54,6 +53,7 @@ class Stopwatch {
      * @return true on success
      */
     static bool stop();
+    static bool abort() { return stop(); } // Alias by default
 
     /**
      * @brief Pause the stopwatch
@@ -110,7 +110,11 @@ class Stopwatch {
        * @brief Print a debug message
        * @details Print a simple debug message "Stopwatch::function"
        */
-      static void debug(const char func[]);
+      static void debug(FSTR_P const);
+
+    #else
+
+      static void debug(FSTR_P const) {}
 
     #endif
 };
